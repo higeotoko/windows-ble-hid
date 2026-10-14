@@ -86,9 +86,13 @@ public static class CaptureSession
         bool verbose,
         Func<int> mouseIntervalMs,
         bool stopEndsSession,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool jisDiagnostics = false)
     {
-        using var capture = new InputCapture { Verbose = verbose };
+        var diagnostic = jisDiagnostics ? new JisCaptureDiagnostic() : null;
+        // A restricted diagnostic must never enable the legacy complete-usage verbose log.
+        if (diagnostic is not null) verbose = false;
+        using var capture = new InputCapture { Verbose = verbose, JisDiagnostic = diagnostic?.Keys };
         var stopped = new TaskCompletionSource();
         using var registration = cancellationToken.Register(() => stopped.TrySetResult());
 
@@ -134,6 +138,25 @@ public static class CaptureSession
         }
 
         using var pumpCancellation = new CancellationTokenSource();
+        var diagnosticPump = diagnostic is null ? Task.CompletedTask : Task.Run(async () =>
+        {
+            try
+            {
+                var nextSummary = Environment.TickCount64;
+                while (!pumpCancellation.IsCancellationRequested)
+                {
+                    diagnostic.Drain(log);
+                    if (Environment.TickCount64 >= nextSummary)
+                    {
+                        log(diagnostic.Summary(capture.KeyboardEvents));
+                        nextSummary = Environment.TickCount64 + 1000;
+                    }
+                    await Task.Delay(100, pumpCancellation.Token);
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally { diagnostic.Drain(log); }
+        });
         var pump = Task.Run(async () =>
         {
             var clock = Stopwatch.StartNew();
@@ -185,6 +208,7 @@ public static class CaptureSession
 
                         var started = clock.ElapsedMilliseconds;
                         await peripheral.SendKeyboardAsync(key.Modifiers, key.Usages!);
+                        diagnostic?.Report(key.Modifiers, key.Usages!, notifyReturned: true);
                         var elapsed = clock.ElapsedMilliseconds - started;
                         if (verbose && sent < 40) log($"  [pump] key notify #{sent} took {elapsed} ms");
                         Interlocked.Increment(ref sent);
@@ -223,6 +247,7 @@ public static class CaptureSession
         capture.Log += message => log(message);
         capture.KeyboardReport += (modifiers, usages) =>
         {
+            diagnostic?.Report(modifiers, usages, notifyReturned: false);
             reports.EnqueueKeyboard(modifiers, usages);
             Wake();
         };
@@ -286,6 +311,7 @@ public static class CaptureSession
         pumpCancellation.Cancel();
         try { await pump; } catch (OperationCanceledException) { }
         await peripheral.ReleaseKeysAsync();
+        await diagnosticPump;
         log($"  capture stopped. keyboard events={capture.KeyboardEvents}, mouse events={capture.MouseEvents}, reports sent={sent}");
         return sent;
     }

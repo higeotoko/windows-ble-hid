@@ -7,7 +7,7 @@ namespace BleHid.Core;
 public sealed class JisKeyDiagnostic
 {
     public static readonly string[] Targets =
-        ["hankaku", "muhenkan", "henkan", "kana", "yen", "ro", "caps", "ime-on", "ime-off"];
+        ["hankaku", "muhenkan", "henkan", "kana", "yen", "ro", "caps", "ime-on", "ime-off", "ime-control"];
 
     private readonly string _target;
     private readonly uint _scan;
@@ -27,6 +27,7 @@ public sealed class JisKeyDiagnostic
             "caps" => (0x3Au, 0x14),
             "ime-on" => (0u, 0x16),
             "ime-off" => (0u, 0x1A),
+            "ime-control" => (0u, 0),
             _ => throw new ArgumentException("Unknown JIS diagnostic target.", nameof(target))
         };
     }
@@ -37,12 +38,16 @@ public sealed class JisKeyDiagnostic
     {
         // A selected IME VK is useful when firmware emits an unusual scan code. Do not use
         // a broad OEM-VK filter: those VKs can also represent unrelated printable keys.
-        if (!(scan != 0 && scan == _scan && !extended) && !(_virtualKey != 0 && vk == _virtualKey))
+        var selected = _target == "ime-control"
+            ? vk is 0x14 or 0x15 or 0x16 or 0x19 or 0x1A or 0x1C or 0x1D ||
+              !extended && scan is 0x29 or 0x3A or 0x70 or 0x79 or 0x7B
+            : scan != 0 && scan == _scan && !extended || _virtualKey != 0 && vk == _virtualKey;
+        if (!selected)
             return;
         var mapped = VirtualKeyMap.TryGetUsage(vk, scan, extended, out var usage)
             ? $"0x{usage:X2}" : "unmapped";
         Metadata?.Invoke($"[jis:{_target}] vk=0x{vk:X2} scan=0x{scan:X2} extended={extended} " +
             $"{(down ? "down" : "up")} injected={(flags & 0x10) != 0} " +
-            $"mod=0x{(byte)modifiers:X2} usage={mapped}");
+            $"mod=0x{(byte)modifiers:X2} flags=0x{flags:X2} usage={mapped}");
     }
 }

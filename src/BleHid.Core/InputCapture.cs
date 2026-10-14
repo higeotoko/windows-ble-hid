@@ -315,6 +315,30 @@ public sealed class InputCapture : IDisposable
         var identity = KeyIdentity.For(virtualKey, scanCode, extended);
         var releaseLocally = !isDown && _localPressedKeys.Remove(identity);
 
+        // Japanese NLS half/full-width exposes persistent DBE states. The observed G14
+        // sequence is F3 Up -> F4 Down without a later physical Up, so holding Usage 35
+        // makes the receiver repeat the IME toggle. Treat only this VK+scan as a pulse;
+        // US VK_OEM_3 and ordinary VK_KANJI keep their normal Down/Up behavior.
+        if (!extended && scanCode == 0x29 && virtualKey is 0xF3 or 0xF4)
+        {
+            if (_passThrough) return false;
+            var wasPressed = _pressedUsages.Remove(identity);
+            _pressedVirtualKeys.Remove(identity);
+            var pulseModifiers = CurrentModifiers();
+            var held = _pressedUsages.Values.Distinct().Take(6).ToArray();
+            if (!isDown)
+            {
+                _releasedForSwitch.Remove(identity);
+                if (wasPressed) KeyboardReport?.Invoke(pulseModifiers, held);
+            }
+            else if (!_releasedForSwitch.Contains(identity))
+            {
+                KeyboardReport?.Invoke(pulseModifiers, held.Append((byte)0x35).Distinct().Take(6).ToArray());
+                KeyboardReport?.Invoke(pulseModifiers, held);
+            }
+            return !releaseLocally;
+        }
+
         // The JIS Eisu key may have a layout-dependent VK, but its physical CapsLock
         // position must still work for the host-switch shortcut.
         if (scanCode == 0x3A && !extended) virtualKey = 0x14;

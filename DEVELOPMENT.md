@@ -249,6 +249,28 @@ capture share the ordered queue; disconnect recovery still returns local immedia
 
 ### Restricted diagnostic (local only)
 
+G14 hardware follow-up found a half/full-width NLS transition: `VK_F3 Up, scan 29`
+followed by `VK_F4 Down, scan 29`, with no subsequent release. The old capture held Usage
+`35` during idle periods, making the receiver keep repeating IME toggles. F3/F4 at this
+non-extended scan position now emit a complete down/release pulse on the DBE Down; DBE Up
+does not create a second toggle. Other held usages and modifiers survive the pulse release.
+US grave (`VK_OEM_3`), ordinary VK_KANJI and other scan positions retain normal Down/Up.
+This is supported by the submitted trace and [Microsoft's Japanese 106 NLS sample](https://github.com/microsoft/Windows-driver-samples/blob/main/input/layout/fe_kbds/jpn/106/kbd106.c),
+which marks scan 29 as KBDSPECIAL and routes SBCSCHAR through KBDNLS_SBCSDBCS.
+The trace's `Injected=False` rules out identifying this case with an injected-event filter.
+Do not generalize the pulse to all Japanese keys or LANG usages without another trace.
+
+On 2026-10-14, the tester reported that the corrected application works without the
+continuous IME switching on G14 -> Alienware. This verifies the reported half/full-width
+toggle regression on that pair; it does not complete the other JIS/IME/reconnect checks.
+The corrected build passes all 324 Core tests and publishes for Windows x64.
+
+For capture-time diagnostics, the CLI command `capture jis` records only IME-control
+metadata, queued/notify-returned IME usages, and periodic aggregate counts. Ordinary key
+usages are never printed. The diagnostic queue is bounded to 256 lines and drained outside
+the hook thread. `notify-returned` is an API completion, not a host-delivery acknowledgement.
+`capture jis verbose` disables full-usage verbose logging. Only share `[jis...]` lines.
+
 Run `BleHid.Cli.exe --diagnose-jis <target>` with one of `hankaku`, `muhenkan`, `henkan`,
 `kana`, `yen`, `ro`, `caps`, `ime-on`, `ime-off`. Press Enter to stop. This mode starts no
 BLE provider, leaves input local, and disables capture hotkeys. It reports only the selected

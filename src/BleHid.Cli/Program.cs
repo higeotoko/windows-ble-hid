@@ -54,6 +54,7 @@ Console.WriteLine($"""
       scroll <n>           scroll wheel
       capture              redirect local keyboard+mouse (Ctrl+Alt+Q stops)
       capture verbose      same, with per-report timing diagnostics
+      capture jis          only IME-control metadata/report states (no text/key array log)
       capture <ms>         same, with a custom pointer report interval
       host                 list subscribed hosts and the current target
       host <n|next|local|all>  choose the target; local keeps input on this PC
@@ -114,6 +115,7 @@ while (true)
 
                 var captureArgs = argument.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 var verbose = captureArgs.Any(a => a.Equals("verbose", StringComparison.OrdinalIgnoreCase));
+                var jisDiagnostics = captureArgs.Any(a => a.Equals("jis", StringComparison.OrdinalIgnoreCase));
                 // A BLE link carries one packet per connection interval, so reports are paced
                 // to that rate; sending faster just queues in the controller and adds latency.
                 var mouseIntervalMs = captureArgs.Select(a => int.TryParse(a, out var v) ? v : 0)
@@ -121,7 +123,7 @@ while (true)
                 if (mouseIntervalMs <= 0) mouseIntervalMs = 10;
 
                 await CaptureSession.RunAsync(peripheral, Console.WriteLine, verbose, () => mouseIntervalMs,
-                    stopEndsSession: true, CancellationToken.None);
+                    stopEndsSession: true, CancellationToken.None, jisDiagnostics);
                 break;
             }
 

@@ -187,7 +187,15 @@ Treat every line here as unproven.
 - [ ] **Stop** in the notification disables monitoring and removes the foreground service
 - [ ] **Share diagnostics** includes the visible timeline and no account or unrelated device data
 
-## Japanese JIS on Windows (not yet hardware verified)
+## Japanese JIS on Windows (IME toggle verified; remaining checks pending)
+
+- [x] G14 trace confirms F3 Up -> F4 Down at scan 29, followed by held Usage 35 in the old build.
+- [x] Tester confirms corrected app no longer continuously switches IME on G14 -> Alienware (2026-10-14).
+
+- [ ] Collect a corrected-build diagnostic trace: after one half/full-width press,
+      `capture jis` must show a Usage 35 pulse followed by empty IME state while idle.
+      Verify a second press switches back, and that long-press repeat stops after release.
+      Preserve another held key and Shift/Alt/Ctrl during pulse release.
 
 - [ ] Save the original v0.6.0 package; use a separate folder for the JIS build.
 - [ ] Record sender/receiver Windows builds, sender keyboard model/remappers, receiver
