@@ -107,6 +107,9 @@ public sealed class BleHidPeripheral : IAsyncDisposable
 
     /// <summary>Raised on every target change so a running capture can re-evaluate pass-through.</summary>
     public event Action? TargetChanged;
+    // During capture, UI target choices must share the report queue so the old host receives
+    // key releases before selection changes. Outside capture selection remains immediate.
+    internal event Action<Action>? TargetSelectionRequested;
 
     /// <summary>Raised when a host reports new lock-lamp state.</summary>
     public event Action? CapsLockChanged;
@@ -647,17 +650,27 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     {
         if (!TargetAvailability.IsUnavailable(_localOnly, _selectedHostId, availableHostIds)) return;
 
-        SelectLocal();
+        SelectLocalImmediately();
         Log?.Invoke($"[host] {message} - returning input to this PC");
     }
 
     /// <summary>Cycles this PC -> host1 -> ... -> hostN -> this PC. Safe to call from any thread.</summary>
     public string SelectNextHost()
     {
+        if (TargetSelectionRequested is { } requested)
+        {
+            requested(() => SelectNextHostImmediately());
+            return SelectedHostDisplay;
+        }
+        return SelectNextHostImmediately();
+    }
+
+    internal string SelectNextHostImmediately()
+    {
         var hosts = Hosts();
         _warnedMissingHost = false;
 
-        if (hosts.Count == 0) return SelectLocal();
+        if (hosts.Count == 0) return SelectLocalImmediately();
 
         // Broadcast is not in the rotation; it is a fallback reached through SelectAllHosts.
         if (_localOnly)
@@ -668,14 +681,14 @@ public sealed class BleHidPeripheral : IAsyncDisposable
             return hosts[0].Display;
         }
 
-        if (_selectedHostId is null) return SelectLocal();
+        if (_selectedHostId is null) return SelectLocalImmediately();
 
         var index = -1;
         for (var i = 0; i < hosts.Count; i++)
             if (string.Equals(hosts[i].DeviceId, _selectedHostId, StringComparison.OrdinalIgnoreCase)) { index = i; break; }
 
         var next = index + 1;
-        if (next >= hosts.Count) return SelectLocal();
+        if (next >= hosts.Count) return SelectLocalImmediately();
 
         _selectedHostId = hosts[next].DeviceId;
         TargetChanged?.Invoke();
@@ -683,6 +696,16 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     }
 
     public string SelectLocal()
+    {
+        if (TargetSelectionRequested is { } requested)
+        {
+            requested(() => SelectLocalImmediately());
+            return SelectedHostDisplay;
+        }
+        return SelectLocalImmediately();
+    }
+
+    internal string SelectLocalImmediately()
     {
         _localOnly = true;
         _selectedHostId = null;
@@ -692,6 +715,12 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     }
 
     public void SelectAllHosts()
+    {
+        if (TargetSelectionRequested is { } requested) requested(SelectAllHostsImmediately);
+        else SelectAllHostsImmediately();
+    }
+
+    private void SelectAllHostsImmediately()
     {
         _localOnly = false;
         _selectedHostId = null;
@@ -703,11 +732,21 @@ public sealed class BleHidPeripheral : IAsyncDisposable
     {
         var hosts = Hosts();
         if (index < 0 || index >= hosts.Count) return false;
+        var deviceId = hosts[index].DeviceId;
+        if (TargetSelectionRequested is { } requested)
+            requested(() => SelectHostImmediately(deviceId));
+        else SelectHostImmediately(deviceId);
+        return true;
+    }
+
+    private void SelectHostImmediately(string deviceId)
+    {
+        // Subscription indexes may have moved while waiting behind a key notification.
+        if (!Hosts().Any(host => string.Equals(host.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase))) return;
         _localOnly = false;
-        _selectedHostId = hosts[index].DeviceId;
+        _selectedHostId = deviceId;
         _warnedMissingHost = false;
         TargetChanged?.Invoke();
-        return true;
     }
 
     /// <summary>Resolves friendly names for subscribed hosts so they can be shown while switching.</summary>

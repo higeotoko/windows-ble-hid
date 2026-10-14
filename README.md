@@ -1,5 +1,14 @@
 # BleHid
 
+> **Personal JIS fork — hardware validation pending.** This branch is based on upstream
+> [v0.6.0](https://github.com/abhishek-raj/windows-ble-hid/releases/tag/v0.6.0) and adds physical
+> Japanese JIS key capture, safe key release on target changes, and a local-only single-key
+> diagnostic. All 308 Core tests pass and win-x64 CLI/WPF publishing succeeds, but the requested
+> G14-to-Alienware hardware tests have not been performed. Dedicated release-only IME On/Off
+> input and LANG5 remain unsupported. See [JIS development notes](DEVELOPMENT.md#japanese-jis-capture)
+> and [hardware checklist](tests/MANUAL-TESTS.md#japanese-jis-on-windows-not-yet-hardware-verified).
+> The original MIT license and upstream attribution are retained.
+
 <img src="src/BleHid.App/Assets/blehid.png" alt="BleHid icon" width="104" align="right">
 
 Turn a Windows PC into a Bluetooth Low Energy keyboard and mouse, so it can drive other

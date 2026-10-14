@@ -77,12 +77,71 @@ public class VirtualKeyMapTests
         Assert.False(VirtualKeyMap.TryGetUsage(0x07, out _));
     }
 
-    /// <summary>Anything the map emits must fit the 6-slot key array's logical maximum of 101.</summary>
+    /// <summary>Anything the map emits must fit the declared key array.</summary>
     [Fact]
     public void Every_mapped_usage_is_within_the_declared_logical_range()
     {
         for (var vk = 0; vk <= 0xFF; vk++)
             if (VirtualKeyMap.TryGetUsage(vk, out var usage))
-                Assert.InRange(usage, (byte)0, (byte)101);
+                Assert.InRange(usage, (byte)0, HidDescriptors.KeyboardUsageMaximum);
+    }
+
+    [Theory]
+    [InlineData(0xE2, 0x73, 0x87)]
+    [InlineData(0x15, 0x70, 0x88)]
+    [InlineData(0xDC, 0x7D, 0x89)]
+    [InlineData(0x1C, 0x79, 0x8A)]
+    [InlineData(0x1D, 0x7B, 0x8B)]
+    [InlineData(0x19, 0x29, 0x35)]
+    [InlineData(0xF0, 0x3A, 0x39)]
+    // Physical positions, even when the local JIS OEM VK differs from the US VK.
+    [InlineData(0xDE, 0x0D, 0x2E)]
+    [InlineData(0xC0, 0x1A, 0x2F)]
+    [InlineData(0xDB, 0x1B, 0x30)]
+    [InlineData(0xDD, 0x2B, 0x31)]
+    [InlineData(0xBB, 0x27, 0x33)]
+    [InlineData(0xBA, 0x28, 0x34)]
+    public void Physical_jis_keys_preserve_their_hid_identity(int vk, uint scan, byte expected)
+    {
+        Assert.True(VirtualKeyMap.TryGetUsage(vk, scan, false, out var usage));
+        Assert.Equal(expected, usage);
+        Assert.InRange(usage, (byte)0, HidDescriptors.KeyboardUsageMaximum);
+    }
+
+    [Theory]
+    [InlineData(0x73)] [InlineData(0x70)] [InlineData(0x7D)]
+    [InlineData(0x79)] [InlineData(0x7B)]
+    public void Extended_scans_are_not_treated_as_jis_keys(uint scan) =>
+        Assert.False(VirtualKeyMap.TryGetUsage(0x07, scan, true, out _));
+
+    [Theory]
+    [InlineData(0x16, 0x90)] [InlineData(0x1A, 0x91)]
+    public void Dedicated_ime_virtual_keys_use_microsoft_assignments(int vk, byte expected)
+    {
+        Assert.True(VirtualKeyMap.TryGetUsage(vk, out var usage));
+        Assert.Equal(expected, usage);
+    }
+
+    [Theory]
+    [InlineData(0x15)] [InlineData(0x19)] [InlineData(0x1C)] [InlineData(0x1D)]
+    [InlineData(0xE2)]
+    public void Ambiguous_language_keys_require_physical_evidence(int vk) =>
+        Assert.False(VirtualKeyMap.TryGetUsage(vk, 0, false, out _));
+
+    [Fact]
+    public void F24_scan_is_not_assumed_to_be_lang5() =>
+        Assert.False(VirtualKeyMap.TryGetUsage(0x87, 0x76, false, out _));
+
+    [Theory]
+    [InlineData(0xBB, 0x0D, 0x2E)] [InlineData(0xDB, 0x1A, 0x2F)]
+    [InlineData(0xDD, 0x1B, 0x30)] [InlineData(0xDC, 0x2B, 0x31)]
+    [InlineData(0xBA, 0x27, 0x33)] [InlineData(0xDE, 0x28, 0x34)]
+    [InlineData(0xC0, 0x29, 0x35)]
+    public void Us_symbols_keep_existing_physical_and_vk_results(int vk, uint scan, byte expected)
+    {
+        Assert.True(VirtualKeyMap.TryGetUsage(vk, scan, false, out var physical));
+        Assert.True(VirtualKeyMap.TryGetUsage(vk, 0, false, out var fallback));
+        Assert.Equal(expected, physical);
+        Assert.Equal(expected, fallback);
     }
 }

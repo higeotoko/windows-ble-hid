@@ -186,3 +186,21 @@ Treat every line here as unproven.
 - [ ] An unreachable computer leaves **Connecting** through timeout and bounded retry
 - [ ] **Stop** in the notification disables monitoring and removes the foreground service
 - [ ] **Share diagnostics** includes the visible timeline and no account or unrelated device data
+
+## Japanese JIS on Windows (not yet hardware verified)
+
+- [ ] Save the original v0.6.0 package; use a separate folder for the JIS build.
+- [ ] Record sender/receiver Windows builds, sender keyboard model/remappers, receiver
+      Japanese 106/109 layout, IME template, key assignments and active app input language.
+- [ ] Run the local-only `--diagnose-jis` mode one target at a time (see DEVELOPMENT.md).
+      Verify Down/Up, repeat, Shift/Alt and IME-state changes without general keystroke logs.
+- [ ] Obtain a fresh bond after the Report Map change, choosing the LE/PC entry.
+- [ ] Verify alphanumerics, half/full-width IME toggle, Henkan/Muhenkan, Kana and mode round trips.
+- [ ] Verify Yen/Ro and `@ : ^ [ ] \\ _ |` with/without Shift, plus CapsLock/Eisu combinations.
+- [ ] Verify Ctrl+Alt+CapsLock (both sides of modifiers), Ctrl+D+C and Ctrl+Alt+Q.
+- [ ] Hold JIS/symbol/modifier keys while switching hosts/local through hotkeys and the UI;
+      old host must receive release, new host must not inherit held keys; re-press must work.
+- [ ] Verify existing mouse input remains functional.
+- [ ] Verify reconnect without restarting the provider, then provider restart separately.
+- [ ] If dedicated IME On/Off exists, record its event shape; release-only input is not yet
+      implemented as a pulse and must not be marked supported from unit tests alone.

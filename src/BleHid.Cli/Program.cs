@@ -6,6 +6,7 @@ var requireEncryption = !args.Contains("--plain", StringComparer.OrdinalIgnoreCa
 
 bool Flag(string name) => args.Contains(name, StringComparer.OrdinalIgnoreCase);
 
+if (Flag("--diagnose-jis")) return await JisDiagnosticMode.RunAsync(args);
 if (Flag("--background")) return await BackgroundMode.RunAsync(requireEncryption);
 if (Flag("--diagnose")) return await DiagnoseMode.RunAsync(requireEncryption);
 if (Flag("--stop")) return BackgroundMode.Stop();

@@ -139,7 +139,7 @@ The app exposes one composite HID service:
 - Keyboard LED output: Report ID 1, Output — written by the host, carries Caps/Num/Scroll state
 - Mouse input: Report ID 2
 - HID Information flags: `RemoteWake | NormallyConnectable`
-- Report Map: 135 bytes
+- Report Map: 136 bytes (the JIS key-array Logical Maximum uses a two-byte value)
 - Battery Service: `0x180F`
 
 The LED output report is the only channel carrying information *back* from the host. A HID
@@ -218,6 +218,54 @@ by that flag:
 Num Lock itself, and the keypad operators, are unambiguous by virtual key and stay in the
 virtual-key map. The virtual-key map also remains the fallback for injected input, which can
 arrive with no scan code.
+
+## Japanese JIS capture
+
+Capture preserves physical Scan 1 positions for International1–5: Ro `73 -> 87`,
+Kana `70 -> 88`, Yen `7D -> 89`, Henkan `79 -> 8A`, Muhenkan `7B -> 8B` (hex).
+Non-extended symbol positions are resolved physically as well, preserving US positions
+while avoiding layout-dependent OEM VKs. CapsLock position `3A` retains Usage `39` and
+works for Ctrl+Alt+CapsLock even with a JIS Eisu VK. The receiving layout/IME owns its behavior.
+The key array declares Usages through LANG2 `91`, with its eight-byte payload unchanged.
+Keyboard/mouse Report IDs, mouse descriptor bytes, LED output and GATT services are unchanged.
+
+Sources: [Microsoft Scan 1 table](https://learn.microsoft.com/en-us/windows/win32/inputdev/about-keyboard-input),
+[USB HID Usage Tables, chapter 10](https://usb.org/sites/default/files/hut1_7.pdf), and
+[Microsoft dedicated IME key assignments](https://learn.microsoft.com/en-us/windows-hardware/design/component-guidelines/keyboard-japan-ime).
+
+The usual half/full-width key position `29` maps to Usage `35`; it is not forcibly mapped
+to LANG1/2 or LANG5. LANG5 `94` is not enabled: Scan `76` also belongs to F24 and requires
+hardware evidence. Language-dependent VK_KANA/KANJI alone are not enough to infer JIS,
+since those values are shared with Korean VKs. Dedicated VK_IME_ON/OFF map to LANG1/2.
+Release-only dedicated IME events are observed but do not synthesize a pulse: this path
+requires hardware validation before implementation. No G14/Alienware hardware result is
+claimed by the unit tests or build. CLI text/character generation still assumes US layout.
+
+Key identity is Scan Code plus Extended flag, or VK when no Scan Code is available.
+Down fixes the usage until Up, including repeat and changed VKs. Duplicate usages remain
+pressed until all corresponding physical keys release. Target changes release old keys
+and suppress held keys/modifiers until their physical Up. UI selection requests during
+capture share the ordered queue; disconnect recovery still returns local immediately.
+
+### Restricted diagnostic (local only)
+
+Run `BleHid.Cli.exe --diagnose-jis <target>` with one of `hankaku`, `muhenkan`, `henkan`,
+`kana`, `yen`, `ro`, `caps`, `ime-on`, `ime-off`. Press Enter to stop. This mode starts no
+BLE provider, leaves input local, and disables capture hotkeys. It reports only the selected
+key's VK, Scan Code, Extended, Down/Up, Injected, modifier bits and candidate Usage.
+It does not read text, clipboard or window titles, or log other pressed usages. Metadata
+is queued and printed outside the hook callback. Firmware keys with unexpected scans can
+be observed by their narrowly selected IME VK, but OEM VKs are never a broad filter.
+Do not use `capture verbose` for this: its legacy full-usage logging can expose typed text.
+
+After changing the Report Map, validate a fresh bond and a bonded reconnect separately.
+The receiver must use Japanese 106/109 hardware layout and Japanese IME in the focused app.
+Keep the original release package before testing; do not overwrite it. On the receiver,
+remove the specific old BleHid/G14 Bluetooth entry, start only one updated front end on the
+sender, and re-pair the LE/PC entry rather than the audio entry. Remove the corresponding
+sender bond only if it remains stale. Do not remove unrelated devices. Confirm actual HID
+input and both report subscriptions, not merely the displayed Bluetooth connection state.
+The existing Windows Classic/HOGP reconnect issue below remains a separate limitation.
 
 ## Android provider-restart reconnect root cause
 

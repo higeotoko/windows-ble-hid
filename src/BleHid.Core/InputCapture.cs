@@ -27,9 +27,16 @@ public sealed class InputCapture : IDisposable
     private const int WM_MBUTTONDOWN = 0x0207, WM_MBUTTONUP = 0x0208;
     private const int WM_MOUSEWHEEL = 0x020A;
 
-    private readonly HashSet<byte> _pressedUsages = [];
-    private readonly HashSet<int> _pressedVirtualKeys = [];
-    private readonly HashSet<int> _localPressedVirtualKeys = [];
+    private readonly object _keyboardStateLock = new();
+    private readonly record struct KeyIdentity(uint ScanCode, bool Extended, int FallbackVirtualKey)
+    {
+        public static KeyIdentity For(int vk, uint scan, bool extended) =>
+            new(scan, extended, scan == 0 ? vk : 0);
+    }
+    private readonly Dictionary<KeyIdentity, byte> _pressedUsages = [];
+    private readonly Dictionary<KeyIdentity, int> _pressedVirtualKeys = [];
+    private readonly HashSet<KeyIdentity> _localPressedKeys = [];
+    private readonly HashSet<KeyIdentity> _releasedForSwitch = [];
     private LowLevelProc? _keyboardProc;
     private LowLevelProc? _mouseProc;
     private WinEventProc? _winEventProc;
@@ -58,6 +65,10 @@ public sealed class InputCapture : IDisposable
     public event Action? SwitchHostRequested;
     public event Action? StopRequested;
     public event Action<string>? Log;
+    /// <summary>Opt-in metadata for one selected JIS key. Never logs other pressed usages.</summary>
+    public JisKeyDiagnostic? JisDiagnostic { get; init; }
+    /// <summary>Disable capture hotkeys for a passive, local-only diagnostic session.</summary>
+    public bool HotkeysEnabled { get; init; } = true;
 
     public bool IsRunning => _running;
 
@@ -67,13 +78,17 @@ public sealed class InputCapture : IDisposable
     /// so the first delta is not the distance the pointer travelled locally.</summary>
     public void SetPassThrough(bool value)
     {
-        if (_passThrough == value) return;
-        _passThrough = value;
-        if (!value && _running) SetCursorPos(_centerX, _centerY);
-        // A target change invalidates gesture state: the shake that caused it is usually still
-        // being performed, and local deltas need a fresh reference point either way.
-        _gesture?.Reset();
-        _haveLocalPoint = false;
+        lock (_keyboardStateLock)
+        {
+            if (_passThrough == value) return;
+            if (value && _pressedVirtualKeys.Count > 0) ReleaseKeyboardState();
+            _passThrough = value;
+            if (!value && _running) SetCursorPos(_centerX, _centerY);
+            // A target change invalidates gesture state: the shake that caused it is usually still
+            // being performed, and local deltas need a fresh reference point either way.
+            _gesture?.Reset();
+            _haveLocalPoint = false;
+        }
     }
 
     /// <summary>
@@ -139,7 +154,7 @@ public sealed class InputCapture : IDisposable
         _keyboardProc = KeyboardHookProc;
         _mouseProc = MouseHookProc;
 
-        var measureLatency = Environment.GetEnvironmentVariable("BLEHID_INPUT_TIMING") == "1";
+        var measureLatency = JisDiagnostic is null && Environment.GetEnvironmentVariable("BLEHID_INPUT_TIMING") == "1";
         var localKeyboardTiming = new HookTiming();
         var remoteKeyboardTiming = new HookTiming();
         var localMouseTiming = new HookTiming();
@@ -277,7 +292,7 @@ public sealed class InputCapture : IDisposable
         var message = (int)wParam;
         var isDown = message is WM_KEYDOWN or WM_SYSKEYDOWN;
         var virtualKey = (int)data.vkCode;
-        return HandleKeyboardEvent(virtualKey, isDown, data.scanCode, (data.flags & LLKHF_EXTENDED) != 0)
+        return HandleKeyboardEvent(virtualKey, isDown, data.scanCode, (data.flags & LLKHF_EXTENDED) != 0, data.flags)
             ? (IntPtr)1
             : CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
     }
@@ -286,13 +301,36 @@ public sealed class InputCapture : IDisposable
     /// Scan code and the extended flag identify the physical key, which the virtual-key code
     /// alone cannot: Windows has already applied the local Num Lock state by this point.
     /// </summary>
-    internal bool HandleKeyboardEvent(int virtualKey, bool isDown, uint scanCode = 0, bool extended = false)
+    internal bool HandleKeyboardEvent(int virtualKey, bool isDown, uint scanCode = 0, bool extended = false,
+        uint flags = 0)
+    {
+        lock (_keyboardStateLock)
+            return HandleKeyboardEventCore(virtualKey, isDown, scanCode, extended, flags);
+    }
+
+    private bool HandleKeyboardEventCore(int virtualKey, bool isDown, uint scanCode, bool extended, uint flags)
     {
         _keyboardEvents++;
-        var releaseLocally = !isDown && _localPressedVirtualKeys.Remove(virtualKey);
+        JisDiagnostic?.Observe(virtualKey, scanCode, extended, isDown, flags, CurrentModifiers());
+        var identity = KeyIdentity.For(virtualKey, scanCode, extended);
+        var releaseLocally = !isDown && _localPressedKeys.Remove(identity);
 
-        if (isDown) _pressedVirtualKeys.Add(virtualKey);
-        else _pressedVirtualKeys.Remove(virtualKey);
+        // The JIS Eisu key may have a layout-dependent VK, but its physical CapsLock
+        // position must still work for the host-switch shortcut.
+        if (scanCode == 0x3A && !extended) virtualKey = 0x14;
+        if (isDown) _pressedVirtualKeys.TryAdd(identity, virtualKey);
+        else
+        {
+            if (_pressedVirtualKeys.TryGetValue(identity, out var downVirtualKey)) virtualKey = downVirtualKey;
+            _pressedVirtualKeys.Remove(identity);
+            _releasedForSwitch.Remove(identity);
+        }
+
+        if (!HotkeysEnabled && _passThrough)
+        {
+            if (isDown) _localPressedKeys.Add(identity);
+            return false;
+        }
 
         if (virtualKey == 0x14)
         {
@@ -312,16 +350,14 @@ public sealed class InputCapture : IDisposable
 
         if (isDown && virtualKey == 0x51 && IsDown(0x11) && IsDown(0x12)) // Ctrl+Alt+Q
         {
-            _pressedUsages.Clear();
-            _pressedVirtualKeys.Clear();
-            KeyboardReport?.Invoke(KeyModifiers.None, []);
+            ReleaseKeyboardState();
             StopRequested?.Invoke();
             return true;
         }
 
         // Ctrl+D+C switches host. Latched so key auto-repeat cannot cycle past the target.
         if (!isDown && virtualKey is 0x44 or 0x43) _switchLatched = false;
-        if (isDown && IsDown(0x11) && _pressedVirtualKeys.Contains(0x44) && _pressedVirtualKeys.Contains(0x43))
+        if (isDown && IsDown(0x11) && IsDown(0x44) && IsDown(0x43))
         {
             if (!_switchLatched)
             {
@@ -334,18 +370,23 @@ public sealed class InputCapture : IDisposable
         // Hotkeys stay live in pass-through, but nothing else is captured or swallowed.
         if (_passThrough)
         {
-            if (isDown) _localPressedVirtualKeys.Add(virtualKey);
+            if (isDown) _localPressedKeys.Add(identity);
+            else _releasedForSwitch.Remove(identity);
             return false;
         }
 
-        if (VirtualKeyMap.TryGetUsage(virtualKey, scanCode, extended, out var usage))
+        var suppressed = _releasedForSwitch.Contains(identity);
+        if (!isDown)
         {
-            if (isDown) _pressedUsages.Add(usage);
-            else _pressedUsages.Remove(usage);
+            // Release the usage selected on Down, even if Windows changed the VK/IME mode.
+            _pressedUsages.Remove(identity);
+            _releasedForSwitch.Remove(identity);
         }
+        else if (!suppressed && VirtualKeyMap.TryGetUsage(virtualKey, scanCode, extended, out var usage))
+            _pressedUsages.TryAdd(identity, usage);
 
         var modifiers = CurrentModifiers();
-        var usages = _pressedUsages.Take(6).ToArray();
+        var usages = _pressedUsages.Values.Distinct().Take(6).ToArray();
         if (Verbose && _keyboardEvents <= 20)
             Log?.Invoke($"  [key] vk=0x{virtualKey:x2} {(isDown ? "down" : "up")} -> mod=0x{(byte)modifiers:x2} usages=[{string.Join(" ", usages.Select(u => u.ToString("x2")))}]");
 
@@ -354,18 +395,31 @@ public sealed class InputCapture : IDisposable
     }
 
     private void RequestHostSwitch()
+        => RequestTargetChange(() => SwitchHostRequested?.Invoke());
+
+    /// <summary>Serialize key releases with a queued UI or hotkey target change.</summary>
+    internal void RequestTargetChange(Action change)
     {
-        // Release everything held before the target changes. These reports are queued ahead of
-        // the switch, so the outgoing host sees the release instead of being left with a key or
-        // a mouse button stuck down.
+        lock (_keyboardStateLock)
+        {
+            // Release everything held before the target changes. These reports are queued ahead of
+            // the switch, so the outgoing host sees the release instead of being left with a key or
+            // a mouse button stuck down.
+            ReleaseKeyboardState();
+            if (_buttons != MouseButtons.None)
+            {
+                _buttons = MouseButtons.None;
+                MouseReport?.Invoke(_buttons, 0, 0, 0);
+            }
+            change();
+        }
+    }
+
+    private void ReleaseKeyboardState()
+    {
+        _releasedForSwitch.UnionWith(_pressedVirtualKeys.Keys);
         _pressedUsages.Clear();
         KeyboardReport?.Invoke(KeyModifiers.None, []);
-        if (_buttons != MouseButtons.None)
-        {
-            _buttons = MouseButtons.None;
-            MouseReport?.Invoke(_buttons, 0, 0, 0);
-        }
-        SwitchHostRequested?.Invoke();
     }
 
     /// <summary>
@@ -483,22 +537,25 @@ public sealed class InputCapture : IDisposable
 
     private bool IsDown(int virtualKey) => virtualKey switch
     {
-        0x11 => _pressedVirtualKeys.Contains(0xA2) || _pressedVirtualKeys.Contains(0xA3),
-        0x12 => _pressedVirtualKeys.Contains(0xA4) || _pressedVirtualKeys.Contains(0xA5),
-        _ => _pressedVirtualKeys.Contains(virtualKey)
+        0x11 => _pressedVirtualKeys.ContainsValue(0xA2) || _pressedVirtualKeys.ContainsValue(0xA3),
+        0x12 => _pressedVirtualKeys.ContainsValue(0xA4) || _pressedVirtualKeys.ContainsValue(0xA5),
+        _ => _pressedVirtualKeys.ContainsValue(virtualKey)
     };
+
+    private bool IsForwardedModifier(int vk) =>
+        _pressedVirtualKeys.Any(pair => pair.Value == vk && !_releasedForSwitch.Contains(pair.Key));
 
     private KeyModifiers CurrentModifiers()
     {
         var modifiers = KeyModifiers.None;
-        if (_pressedVirtualKeys.Contains(0xA0)) modifiers |= KeyModifiers.LeftShift;
-        if (_pressedVirtualKeys.Contains(0xA1)) modifiers |= KeyModifiers.RightShift;
-        if (_pressedVirtualKeys.Contains(0xA2)) modifiers |= KeyModifiers.LeftControl;
-        if (_pressedVirtualKeys.Contains(0xA3)) modifiers |= KeyModifiers.RightControl;
-        if (_pressedVirtualKeys.Contains(0xA4)) modifiers |= KeyModifiers.LeftAlt;
-        if (_pressedVirtualKeys.Contains(0xA5)) modifiers |= KeyModifiers.RightAlt;
-        if (_pressedVirtualKeys.Contains(0x5B)) modifiers |= KeyModifiers.LeftGui;
-        if (_pressedVirtualKeys.Contains(0x5C)) modifiers |= KeyModifiers.RightGui;
+        if (IsForwardedModifier(0xA0)) modifiers |= KeyModifiers.LeftShift;
+        if (IsForwardedModifier(0xA1)) modifiers |= KeyModifiers.RightShift;
+        if (IsForwardedModifier(0xA2)) modifiers |= KeyModifiers.LeftControl;
+        if (IsForwardedModifier(0xA3)) modifiers |= KeyModifiers.RightControl;
+        if (IsForwardedModifier(0xA4)) modifiers |= KeyModifiers.LeftAlt;
+        if (IsForwardedModifier(0xA5)) modifiers |= KeyModifiers.RightAlt;
+        if (IsForwardedModifier(0x5B)) modifiers |= KeyModifiers.LeftGui;
+        if (IsForwardedModifier(0x5C)) modifiers |= KeyModifiers.RightGui;
         return modifiers;
     }
 

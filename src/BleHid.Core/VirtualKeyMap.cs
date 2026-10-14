@@ -13,6 +13,28 @@ public static class VirtualKeyMap
     {
         if (TryGetNumpadUsage(scanCode, extended, out usage)) return true;
 
+        // Microsoft Scan 1 -> HID table. OEM virtual keys describe characters in the local
+        // layout, not physical positions (e.g. JIS @ and US ` can both be VK_OEM_3).
+        // Keep the existing VK fallback for input without a physical scan code.
+        if (!extended)
+        {
+            usage = scanCode switch
+            {
+                0x0C => 0x2D, 0x0D => 0x2E,
+                0x1A => 0x2F, 0x1B => 0x30, 0x2B => 0x31,
+                0x27 => 0x33, 0x28 => 0x34, 0x29 => 0x35,
+                0x33 => 0x36, 0x34 => 0x37, 0x35 => 0x38,
+                0x3A => 0x39, // JIS Eisu/CapsLock: the receiver owns its IME behavior
+                0x70 => 0x88, // International2: Katakana/Hiragana
+                0x73 => 0x87, // International1: Ro
+                0x7D => 0x89, // International3: Yen
+                0x79 => 0x8A, // International4: Henkan
+                0x7B => 0x8B, // International5: Muhenkan
+                _ => 0
+            };
+            if (usage != 0) return true;
+        }
+
         // Keypad Enter shares VK_RETURN with the main Enter; only the extended flag tells them
         // apart, and some hosts bind them separately.
         if (virtualKey == 0x0D && extended)
@@ -73,6 +95,10 @@ public static class VirtualKeyMap
 
         usage = virtualKey switch
         {
+            // Dedicated IME keys have explicit Microsoft VK/HID assignments. Do not infer
+            // LANG1/2 from VK_KANA/KANJI: those VKs are shared with Korean layouts.
+            0x16 => 0x90, // VK_IME_ON: LANG1
+            0x1A => 0x91, // VK_IME_OFF: LANG2
             0x0D => 0x28, // Enter
             0x1B => 0x29, // Escape
             0x08 => 0x2A, // Backspace

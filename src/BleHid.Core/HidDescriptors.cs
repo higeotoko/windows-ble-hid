@@ -17,6 +17,7 @@ public static class HidDescriptors
 
     public const byte KeyboardReportId = 1;
     public const byte MouseReportId    = 2;
+    public const byte KeyboardUsageMaximum = 0x91;
 
     public const byte ReportTypeInput  = 1;
     public const byte ReportTypeOutput = 2;
@@ -69,10 +70,10 @@ public static class HidDescriptors
         0x95, 0x06,       //   Report Count (6)
         0x75, 0x08,       //   Report Size (8)
         0x15, 0x00,       //   Logical Minimum (0)
-        0x25, 0x65,       //   Logical Maximum (101)
+        0x26, KeyboardUsageMaximum, 0x00, // Logical Maximum (145), explicitly positive
         0x05, 0x07,       //   Usage Page (Keyboard/Keypad)
         0x19, 0x00,       //   Usage Minimum (0)
-        0x29, 0x65,       //   Usage Maximum (101)
+        0x29, KeyboardUsageMaximum, // Usage Maximum (LANG2)
         0x81, 0x00,       //   Input (Data,Array)    - 6 key slots
         0xC0,             // End Collection
 
