@@ -319,8 +319,17 @@ public sealed class InputCapture : IDisposable
         // sequence is F3 Up -> F4 Down without a later physical Up, so holding Usage 35
         // makes the receiver repeat the IME toggle. Treat only this VK+scan as a pulse;
         // US VK_OEM_3 and ordinary VK_KANJI keep their normal Down/Up behavior.
-        if (!extended && scanCode == 0x29 && virtualKey is 0xF3 or 0xF4)
+        // G14 also exposes Kana as F0 Up -> F2 Down (scan 70), or F2 Down
+        // alone, without a physical Up. Keep its existing Usage 88, but pulse it
+        // so neither a held report nor switch-until-Up suppression survives.
+        var kanaState = !extended && scanCode == 0x70 && virtualKey is 0xF0 or 0xF2;
+        if (kanaState || (!extended && scanCode == 0x29 && virtualKey is 0xF3 or 0xF4))
         {
+            if (kanaState)
+            {
+                _releasedForSwitch.Remove(identity);
+                _localPressedKeys.Remove(identity);
+            }
             if (_passThrough) return false;
             var wasPressed = _pressedUsages.Remove(identity);
             _pressedVirtualKeys.Remove(identity);
@@ -333,7 +342,7 @@ public sealed class InputCapture : IDisposable
             }
             else if (!_releasedForSwitch.Contains(identity))
             {
-                KeyboardReport?.Invoke(pulseModifiers, held.Append((byte)0x35).Distinct().Take(6).ToArray());
+                KeyboardReport?.Invoke(pulseModifiers, held.Append(kanaState ? (byte)0x88 : (byte)0x35).Distinct().Take(6).ToArray());
                 KeyboardReport?.Invoke(pulseModifiers, held);
             }
             return !releaseLocally;
